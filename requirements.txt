@@ -3,3 +3,5 @@ uvicorn==0.35.0
 httpx==0.28.1
 PyJWT==2.14.0
 psycopg[binary,pool]>=3.1.18,<4
+# WebSocket transport of uvicorn (HU-52); without it the chat socket cannot be served.
+websockets>=13,<18

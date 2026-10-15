@@ -63,3 +63,13 @@ class Message(BaseModel):
     client_message_id: UUID
     text: str
     created_at: datetime
+    # Set when the recipient has read it. For a message you sent, that is the read receipt.
+    read_at: datetime | None = None
+    is_read: bool = False
+    # What the message carries (HU-50). For IMAGE and LOCATION `text` is an optional caption.
+    message_type: Literal["TEXT", "IMAGE", "LOCATION", "FILE"] = "TEXT"
+    attachment_url: str | None = None
+    attachment_name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    location_name: str | None = None
