@@ -26,7 +26,7 @@ class PostgresMatchingRepository:
         with self.pool.connection() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('matching-api-schema', 0))")
             for migration in sorted((Path(__file__).parents[2] / "db/migrations").glob("*.sql")):
-                self.execute(conn, migration.read_text())
+                self.execute(conn, migration.read_text(encoding='utf-8'))
 
     def ready(self):
         with self.pool.connection() as conn:
