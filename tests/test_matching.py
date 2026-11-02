@@ -257,3 +257,34 @@ def test_accepted_match_exposes_only_the_peer_public_profile(system):
         assert profile["user_id"] == str(peer)
         assert set(profile) == {"user_id", "nombre", "apellido_inicial", "edad", "foto_perfil", "biografia", "deportes", "compatibilidad"}
     assert client.get(f"{PREFIX}/matches/{rid}", headers=headers(C)).status_code == 404
+
+
+# -- HU-47: the author of a message, for the report/sanction flow (internal endpoint) -------------------------------
+
+SERVICE_TOKEN = "service-to-service-secret-with-32-bytes-min"
+
+
+def test_internal_author_endpoint_needs_the_service_secret_and_gives_only_the_account(system, monkeypatch):
+    client, repository, _, _ = system
+    rid = request(client)["id"]
+    assert decide(client, rid, actor=B).status_code == 200
+    message = send(client, rid, actor=A, text="Mensaje que luego se reporta")
+    assert message.status_code == 200, message.text
+    message_id = message.json()["id"]
+    url = f"/internal/v1/messages/{rid}/{message_id}/author"
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN)
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers={"X-Internal-Service-Token": "otro"}).status_code == 401
+    assert client.get(url, headers=headers(A)).status_code == 401                  # a user token is not a service secret
+    ok = client.get(url, headers={"X-Internal-Service-Token": SERVICE_TOKEN})
+    assert ok.status_code == 200 and ok.json() == {"user_id": str(A)}
+    assert "Mensaje" not in ok.text and str(B) not in ok.text                      # only the account, nothing else
+    other = {"X-Internal-Service-Token": SERVICE_TOKEN}
+    assert client.get(f"/internal/v1/messages/{rid}/999999/author", headers=other).status_code == 404
+    assert client.get(f"/internal/v1/messages/{uuid4()}/{message_id}/author", headers=other).status_code == 404
+    assert client.get(f"/internal/v1/messages/{rid}/0/author", headers=other).status_code == 404
+    assert client.get(f"/internal/v1/messages/no-uuid/{message_id}/author", headers=other).status_code == 422
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "corto")
+    assert client.get(url, headers={"X-Internal-Service-Token": "corto"}).status_code == 503
+    monkeypatch.delenv("INTERNAL_SERVICE_TOKEN")
+    assert client.get(url, headers=other).status_code == 503
