@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.internal import router as internal_router
 from app.api.v1.chats import router as chats_router
 from app.api.v1.matching import router
 from app.api.v1.realtime import router as realtime_router
@@ -65,6 +66,7 @@ def create_app(service=None, settings=None):
     app.include_router(router)
     app.include_router(chats_router)
     app.include_router(realtime_router)
+    app.include_router(internal_router)
     return app
 
 

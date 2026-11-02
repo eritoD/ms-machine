@@ -102,6 +102,13 @@ class PostgresMatchingRepository:
                 ORDER BY COALESCE(m.created_at, r.decided_at, r.created_at) DESC, r.id""", (actor, actor))
             return cur.fetchall()
 
+    def message_author(self, match_id: UUID, message_id: int):
+        """The account that wrote a message of a chat, or None if there is no such message."""
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            self.execute(cur, "SELECT sender_id FROM matching_api.messages WHERE match_id=%s AND id=%s", (match_id, message_id))
+            row = cur.fetchone()
+        return row[0] if row else None
+
     def messages(self, match_id: UUID, after: int | None, before: int | None, limit: int, reader: UUID | None = None):
         """One page of messages. With a reader, the other person's messages up to the newest one
         returned are marked as read in the same transaction (opening the chat reads it). A message
