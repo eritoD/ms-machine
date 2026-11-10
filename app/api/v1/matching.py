@@ -45,9 +45,10 @@ def match(match_id: UUID, actor=Depends(get_actor), service=Depends(get_service)
 
 @router.get("/matches/{match_id}/messages", response_model=list[Message])
 def messages(match_id: UUID, after_id: int | None = Query(None, ge=0, le=9223372036854775807),
-             before_id: int | None = Query(None, ge=1, le=9223372036854775807), limit: int = Query(50, ge=1, le=100),
+             before_id: int | None = Query(None, ge=1, le=9223372036854775807),
+             around_id: int | None = Query(None, ge=1, le=9223372036854775807), limit: int = Query(50, ge=1, le=100),
              actor=Depends(get_actor), service=Depends(get_service)):
-    return service.messages(actor, match_id, after_id, before_id, limit)
+    return service.messages(actor, match_id, after_id, before_id, limit, around_id)
 
 
 @router.post("/matches/{match_id}/messages", response_model=Message)

@@ -63,7 +63,7 @@ El emisor siempre se obtiene del token; no se acepta `sender_id` en el cuerpo.
 | POST | `/requests/{id}/decision` | `{"action":"accept"}` o `{"action":"reject"}`. |
 | DELETE | `/requests/{id}` | Cancelar una solicitud pendiente propia; devuelve 204. Si ya fue respondida, devuelve 409. |
 | GET | `/matches/{id}` | Match aceptado y card pública del otro participante. |
-| GET | `/matches/{id}/messages` | Últimos 50 mensajes; `before_id` para anteriores o `after_id` para nuevos; `limit` entre 1 y 100. |
+| GET | `/matches/{id}/messages` | Últimos 50 mensajes; `before_id` para anteriores, `after_id` para nuevos o `around_id` para la página que contiene un mensaje citado (HU-64); `limit` entre 1 y 100. |
 | POST | `/matches/{id}/messages` | `{"client_message_id":"UUID","text":"¡Hola!"}`; hasta 2000 caracteres. |
 | GET | `/health/ready` | Estado de la base; sin autenticación. |
 
@@ -161,6 +161,39 @@ La migración `005_message_attachments.sql` agrega las columnas, reemplaza la re
 texto» por «solo el texto lo exige» y agrega una regla por tipo (una imagen siempre con enlace, una ubicación
 siempre con coordenadas), de modo que la base también la hace cumplir. Los mensajes anteriores quedan como
 `TEXT`. Se aplica una sola vez, aunque el servicio reinicie.
+
+## Responder a un mensaje (HU-64)
+
+Un mensaje puede responder a otro **del mismo chat**. `POST /api/v1/chats/{id}/messages` (y la ruta antigua
+`/matching/matches/{id}/messages`) acepta `replyTo` o `reply_to`: el id del mensaje citado (entero de 1 en adelante; cualquier
+otra cosa es 422). Sirve para texto, imagen, archivo y ubicación.
+
+- **Solo del mismo chat.** Si el mensaje no existe o es de otro chat, la respuesta es la misma `404`
+  «El mensaje citado no está disponible.», así que el id de un mensaje ajeno no dice nada, y no se guarda nada. La base de datos
+  lo vuelve a exigir con una clave foránea `(match_id, reply_to_id)`. Quien no es participante recibe lo mismo que hoy (404) y sin
+  sesión, 401. Un bloqueo, una cuenta eliminada o suspendida se comportan exactamente como con un mensaje que no es respuesta.
+- **Cada mensaje que responde devuelve** `reply_to_id` y `reply_to`: `{id, sender_id, text, message_type, available}`. El texto va
+  recortado a 100 caracteres (con «…»); si el citado era una imagen, archivo o ubicación sin leyenda, `text` va vacío y
+  `message_type` dice de qué tipo era (las coordenadas y la dirección del archivo no viajan). Una respuesta a una respuesta cita
+  solo esa respuesta, no una cadena. El historial trae todas las vistas previas **en la misma consulta** (un `LEFT JOIN`), no una por mensaje.
+- **Citado eliminado.** Hoy ningún endpoint borra un mensaje suelto; igualmente, si una fila citada desaparece, la respuesta se
+  conserva (`reply_to_id` queda en `null` por la clave foránea) y `reply_to` pasa a
+  `{id: null, sender_id: null, text: null, message_type: null, available: false}`, sin mostrar nada de lo que decía. Se sabe que era una
+  respuesta porque `is_reply` se guarda al enviarla. No hay trigger a propósito: rompería los borrados masivos.
+- **Ir al original.** `GET /api/v1/chats/{id}/messages?around_id=<id>` (también en la ruta antigua) devuelve la página que contiene ese
+  mensaje, centrada en él (hasta `limit` mensajes, máximo 100: la mitad anteriores y la mitad posteriores; en los extremos del chat, solo
+  los que existen). `404` si ese id no es de este chat. Va solo, sin `after_id` ni `before_id` (si no, 422). Como cualquier página, marca como
+  leído lo que entrega hasta el mensaje más nuevo de la página.
+- **Avisos.** Una respuesta dispara el mismo trigger de aviso que cualquier mensaje (`kind = 'mensaje'`, el mismo texto, sin el contenido del
+  mensaje); silenciar y bloquear los filtran donde ya se filtraban (HU-59).
+- **Tiempo real.** No hay envío por WebSocket (todo envío es REST). El evento `new_message` ya lleva el mismo objeto que REST, así que trae
+  `reply_to_id` y `reply_to`.
+- **Perfil desde el chat.** No hizo falta cambiar nada: la ficha del match (`GET /matching/matches/{id}`) ya trae `athlete.user_id`, nombre y
+  `foto_perfil` de la otra persona, y el perfil se abre con la tarjeta del deportista de Users (`GET /users/athletes/{id}`), que da 404, sin
+  señales, si hay un bloqueo o la cuenta está eliminada.
+
+La migración `006_message_replies.sql` (idempotente) agrega `reply_to_id`, `is_reply`, un índice único `(match_id, id)` (necesario para la
+clave foránea compuesta, `ON DELETE SET NULL (reply_to_id)`), un índice parcial y dos comprobaciones.
 
 ## Tiempo real con WebSockets (HU-52)
 
