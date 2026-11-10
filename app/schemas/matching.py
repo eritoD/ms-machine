@@ -15,10 +15,15 @@ class Decision(BaseModel):
     action: Literal["accept", "reject"]
 
 
+MAX_MESSAGE_ID = 9223372036854775807
+
+
 class MessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     client_message_id: UUID
     text: str = Field(min_length=1, max_length=2000)
+    # HU-64: the message of the same chat this one answers.
+    reply_to: int | None = Field(default=None, ge=1, le=MAX_MESSAGE_ID)
 
 
 class Sport(BaseModel):
@@ -56,6 +61,17 @@ class MatchingState(BaseModel):
     hidden_user_ids: list[UUID]
 
 
+class ReplyPreview(BaseModel):
+    """HU-64: what a reply shows of the message it quotes. Never the whole message: the text is cut short, and a
+    quoted message that is gone says so (`available` false, every other field null) without showing what it said."""
+
+    id: str | None
+    sender_id: UUID | None
+    text: str | None
+    message_type: Literal["TEXT", "IMAGE", "LOCATION", "FILE"] | None
+    available: bool
+
+
 class Message(BaseModel):
     id: str
     match_id: UUID
@@ -73,3 +89,6 @@ class Message(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     location_name: str | None = None
+    # HU-64: set when this message answers another one of the same chat.
+    reply_to_id: str | None = None
+    reply_to: ReplyPreview | None = None

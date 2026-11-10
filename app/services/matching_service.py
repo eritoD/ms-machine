@@ -5,13 +5,14 @@ from datetime import timezone
 from uuid import uuid4
 
 from app.schemas.chats import ChatLastMessage, ChatParticipant, ChatSummary, ReadResult
-from app.schemas.matching import Connection, MatchingState, Message
+from app.schemas.matching import Connection, MatchingState, Message, ReplyPreview
 from app.services.attachments import check_attachment
 from app.services.realtime import NullRealtime
 
 log = logging.getLogger(__name__)
 
 _LABELS = {"IMAGE": "Imagen", "FILE": "Archivo", "LOCATION": "Ubicación"}
+REPLY_PREVIEW_CHARACTERS = 100  # a quoted message is shown cut short, never whole
 
 
 class MatchingService:
@@ -71,15 +72,35 @@ class MatchingService:
         return self.connection(row, actor)
 
     @staticmethod
-    def message(row):
-        return Message(**{**row, "id": str(row["id"]), "is_read": row.get("read_at") is not None})
+    def reply_preview(row):
+        """What the reply shows of the message it quotes (HU-64): nothing for a plain message; the author, the type
+        and the first characters for a quoted one; "not available" (and nothing else) if it was removed."""
+        if row.get("reply_to_id") is not None:
+            text = (row.get("reply_text") or "").strip()
+            if len(text) > REPLY_PREVIEW_CHARACTERS:
+                text = text[:REPLY_PREVIEW_CHARACTERS].rstrip() + "…"
+            return ReplyPreview(id=str(row["reply_to_id"]), sender_id=row.get("reply_sender_id"), text=text,
+                                message_type=row.get("reply_type"), available=True)
+        if row.get("is_reply"):  # a reply whose quoted message no longer exists
+            return ReplyPreview(id=None, sender_id=None, text=None, message_type=None, available=False)
+        return None
 
-    def messages(self, actor, match_id, after, before, limit):
+    @staticmethod
+    def message(row):
+        reply_id = row.get("reply_to_id")
+        return Message(**{**row, "id": str(row["id"]), "is_read": row.get("read_at") is not None,
+                          "reply_to_id": None if reply_id is None else str(reply_id),
+                          "reply_to": MatchingService.reply_preview(row)})
+
+    def messages(self, actor, match_id, after, before, limit, around=None):
         self.match(actor, match_id)
-        if after is not None and before is not None:
+        if sum(cursor is not None for cursor in (after, before, around)) > 1:
             raise HTTPException(422, "Usa un solo cursor de mensajes.")
+        if around is not None and not self.repository.has_message(match_id, around):
+            raise HTTPException(404, "El mensaje no está disponible.")
         # Reading the conversation marks the other person's messages as read.
-        return [self.message(row) for row in self.repository.messages(match_id, after, before, limit, reader=actor.id)]
+        return [self.message(row) for row in
+                self.repository.messages(match_id, after, before, limit, reader=actor.id, around=around)]
 
     def chats(self, actor, limit, offset):
         rows = self.repository.chats(actor.id, limit, offset)
@@ -107,7 +128,8 @@ class MatchingService:
 
     def send(self, actor, match_id, payload):
         connection = self.match(actor, match_id)
-        row = self.repository.send(match_id, actor.id, payload.client_message_id, payload.text)
+        row = self.repository.send(match_id, actor.id, payload.client_message_id, payload.text,
+                                   reply_to=payload.reply_to)
         return self._saved(connection, actor, row)
 
     def _saved(self, connection, actor, row):
@@ -144,7 +166,8 @@ class MatchingService:
     def send_message(self, actor, match_id, spec):
         """Send a TEXT, IMAGE, FILE or LOCATION message (HU-50). Being in the conversation is checked first."""
         connection = self.match(actor, match_id)
-        fields = {"text": spec.content or "", "message_type": spec.type, "location_name": spec.location_name}
+        fields = {"text": spec.content or "", "message_type": spec.type, "location_name": spec.location_name,
+                  "reply_to": spec.reply_to}
         if spec.type in ("IMAGE", "FILE"):
             name = check_attachment(spec.type, spec.attachment_url, self.attachment_hosts)
             fields["attachment_url"] = spec.attachment_url
