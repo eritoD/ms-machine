@@ -19,10 +19,13 @@ def chats(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0, le=
 
 @router.get("/{conversation_id}/messages", response_model=list[Message])
 def messages(conversation_id: UUID, after_id: int | None = Query(None, ge=0, le=9223372036854775807),
-             before_id: int | None = Query(None, ge=1, le=9223372036854775807), limit: int = Query(50, ge=1, le=100),
+             before_id: int | None = Query(None, ge=1, le=9223372036854775807),
+             around_id: int | None = Query(None, ge=1, le=9223372036854775807), limit: int = Query(50, ge=1, le=100),
              actor=Depends(get_actor), service=Depends(get_service)):
-    """Same page as /matching/matches/{id}/messages. Opening it marks the other person's messages as read."""
-    return service.messages(actor, conversation_id, after_id, before_id, limit)
+    """Same page as /matching/matches/{id}/messages. Opening it marks the other person's messages as read.
+    `around_id` (HU-64) returns the page that holds that message of this chat, centred on it; 404 if it is not
+    one of this chat's messages. Use only one of after_id, before_id and around_id."""
+    return service.messages(actor, conversation_id, after_id, before_id, limit, around_id)
 
 
 @router.post("/{conversation_id}/messages", response_model=Message)

@@ -13,6 +13,12 @@ _PREVIEW = """CASE WHEN m.message_type IS NULL THEN NULL
         ELSE 'Ubicación' END"""
 
 
+# A message with the preview of the one it quotes, in the same query (no query per message).
+_WITH_REPLY = """SELECT m.*, o.sender_id AS reply_sender_id, o.text AS reply_text, o.message_type AS reply_type
+    FROM matching_api.messages m
+    LEFT JOIN matching_api.messages o ON o.match_id = m.match_id AND o.id = m.reply_to_id"""
+
+
 class PostgresMatchingRepository:
     def __init__(self, pool, schema="matching_api"):
         self.pool = pool
@@ -124,18 +130,32 @@ class PostgresMatchingRepository:
             row = cur.fetchone()
         return row[0] if row else None
 
-    def messages(self, match_id: UUID, after: int | None, before: int | None, limit: int, reader: UUID | None = None):
+    def has_message(self, match_id: UUID, message_id: int) -> bool:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            self.execute(cur, "SELECT 1 FROM matching_api.messages WHERE match_id=%s AND id=%s", (match_id, message_id))
+            return cur.fetchone() is not None
+
+    def messages(self, match_id: UUID, after: int | None, before: int | None, limit: int, reader: UUID | None = None,
+                 around: int | None = None):
         """One page of messages. With a reader, the other person's messages up to the newest one
         returned are marked as read in the same transaction (opening the chat reads it). A message
         that arrives meanwhile has a higher id, so it stays unread until it is actually delivered."""
         with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            if after is not None:
-                self.execute(cur, "SELECT * FROM matching_api.messages WHERE match_id=%s AND id>%s ORDER BY id LIMIT %s",
+            if around is not None:
+                # HU-64: the page that holds a quoted message: it and the ones just before it, then the ones after it.
+                self.execute(cur, f"""SELECT * FROM ({_WITH_REPLY} WHERE m.match_id=%s AND m.id<=%s
+                        ORDER BY m.id DESC LIMIT %s) older
+                    UNION ALL
+                    SELECT * FROM ({_WITH_REPLY} WHERE m.match_id=%s AND m.id>%s ORDER BY m.id LIMIT %s) newer
+                    ORDER BY id""", (match_id, around, (limit + 1) // 2, match_id, around, limit // 2))
+                rows = cur.fetchall()
+            elif after is not None:
+                self.execute(cur, f"{_WITH_REPLY} WHERE m.match_id=%s AND m.id>%s ORDER BY m.id LIMIT %s",
                             (match_id, after, limit))
                 rows = cur.fetchall()
             else:
-                self.execute(cur, """SELECT * FROM matching_api.messages WHERE match_id=%s
-                    AND (%s::bigint IS NULL OR id<%s) ORDER BY id DESC LIMIT %s""", (match_id, before, before, limit))
+                self.execute(cur, f"""{_WITH_REPLY} WHERE m.match_id=%s
+                    AND (%s::bigint IS NULL OR m.id<%s) ORDER BY m.id DESC LIMIT %s""", (match_id, before, before, limit))
                 rows = list(reversed(cur.fetchall()))
             if reader is not None and rows:
                 self.execute(cur, """UPDATE matching_api.messages SET read_at=CURRENT_TIMESTAMP
@@ -180,22 +200,29 @@ class PostgresMatchingRepository:
 
     def send(self, match_id: UUID, actor: UUID, client_id: UUID, text: str, message_type: str = "TEXT",
              attachment_url: str | None = None, attachment_name: str | None = None, latitude: float | None = None,
-             longitude: float | None = None, location_name: str | None = None):
+             longitude: float | None = None, location_name: str | None = None, reply_to: int | None = None):
         sent = {"message_type": message_type, "text": text, "attachment_url": attachment_url,
                 "attachment_name": attachment_name, "latitude": latitude, "longitude": longitude,
-                "location_name": location_name}
+                "location_name": location_name, "reply_to_id": reply_to}
         with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             # Serializes messages per conversation so cursors cannot skip an uncommitted message.
             self.execute(cur, "SELECT * FROM matching_api.requests WHERE id=%s FOR UPDATE", (match_id,))
             match = cur.fetchone()
             if not match or actor not in (match["sender_id"], match["recipient_id"]) or match["status"] != "accepted":
                 raise HTTPException(403, "El chat requiere un match aceptado.")
+            if reply_to is not None:
+                # HU-64: only a message of THIS conversation can be answered. One answer for "does not exist" and
+                # "belongs to another chat", so the id of somebody else's message tells nothing.
+                self.execute(cur, "SELECT 1 FROM matching_api.messages WHERE match_id=%s AND id=%s", (match_id, reply_to))
+                if cur.fetchone() is None:
+                    raise HTTPException(404, "El mensaje citado no está disponible.")
             self.execute(cur, """INSERT INTO matching_api.messages(match_id, sender_id, client_message_id, text,
-                    message_type, attachment_url, attachment_name, latitude, longitude, location_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    message_type, attachment_url, attachment_name, latitude, longitude, location_name, reply_to_id,
+                    is_reply)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(match_id,sender_id,client_message_id) DO NOTHING RETURNING *""",
                         (match_id, actor, client_id, text, message_type, attachment_url, attachment_name,
-                         latitude, longitude, location_name))
+                         latitude, longitude, location_name, reply_to, reply_to is not None))
             row = cur.fetchone()
             created = row is not None
             if row is None:
@@ -204,5 +231,7 @@ class PostgresMatchingRepository:
                 row = cur.fetchone()
                 if any(row[name] != value for name, value in sent.items()):
                     raise HTTPException(409, "El identificador del mensaje ya fue utilizado.")
-            # `_created` tells a new message from the retry of one already saved (only the first is announced).
-            return {**row, "_created": created}
+            # The saved message with the preview of the one it quotes. `_created` tells a new message from the retry
+            # of one already saved (only the first is announced).
+            self.execute(cur, f"{_WITH_REPLY} WHERE m.id=%s", (row["id"],))
+            return {**cur.fetchone(), "_created": created}
