@@ -17,6 +17,8 @@ from app.repositories.postgres_matching_repository import PostgresMatchingReposi
 from app.services.matching_service import MatchingService
 from app.services.realtime import RealtimeHub
 from app.services.users_client import UsersClient
+from app.services.entitlements_client import (EntitlementsClient, LimitePlanError, limite_plan_handler,
+                                              settings_from_env)
 
 
 def _finite_or_text(value: float):
@@ -44,16 +46,25 @@ def create_app(service=None, settings=None):
         try:
             repository = PostgresMatchingRepository(pool)
             repository.migrate()
-            with httpx.Client(base_url=config.users_url, timeout=10, trust_env=False) as client:
-                app.state.settings = config
-                hub = RealtimeHub()
-                app.state.service = MatchingService(repository, UsersClient(client), config.attachment_hosts, realtime=hub)
-                _start_realtime(app)
-                yield
+            entitlement_settings = settings_from_env()
+            entitlements = EntitlementsClient(entitlement_settings) if entitlement_settings else None
+            try:
+                with httpx.Client(base_url=config.users_url, timeout=10, trust_env=False) as client:
+                    app.state.settings = config
+                    hub = RealtimeHub()
+                    app.state.service = MatchingService(repository, UsersClient(client), config.attachment_hosts,
+                                                        realtime=hub, entitlements=entitlements)
+                    _start_realtime(app)
+                    yield
+            finally:
+                if entitlements is not None:
+                    entitlements.close()
         finally:
             pool.close()
 
     app = FastAPI(title="SportMatch Matching", lifespan=lifespan)
+    # HU-54: plan limit reached -> 402 {codigo: "LIMITE_PLAN", limite, usado, se_libera_en}.
+    app.add_exception_handler(LimitePlanError, limite_plan_handler)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_, error: RequestValidationError) -> JSONResponse:

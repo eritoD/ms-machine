@@ -22,6 +22,12 @@ def state(actor=Depends(get_actor), service=Depends(get_service)):
     return service.state(actor)
 
 
+@router.get("/plan-usage")
+def plan_usage(actor=Depends(get_actor), service=Depends(get_service)):
+    """HU-54: uso de las solicitudes de match del plan ("Te quedan X de N hoy")."""
+    return service.plan_usage(actor)
+
+
 @router.post("/requests", response_model=Connection)
 def request(payload: RequestCreate, actor=Depends(get_actor), service=Depends(get_service)):
     return service.request(actor, payload.recipient_id)

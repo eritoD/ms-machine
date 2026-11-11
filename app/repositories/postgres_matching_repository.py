@@ -52,6 +52,21 @@ class PostgresMatchingRepository:
                 raise HTTPException(409, "Esta solicitud ya se cerró.")
             return row
 
+    # HU-54: the free plan counts the requests sent in a rolling window (cancelled ones too, so cancelling
+    # and sending again does not reset the count).
+    def requests_sent_since(self, sender: UUID, since):
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            self.execute(cur, """SELECT created_at FROM matching_api.requests
+                WHERE sender_id=%s AND created_at > %s ORDER BY created_at""", (sender, since))
+            return [row[0] for row in cur.fetchall()]
+
+    def pair_exists(self, a: UUID, b: UUID) -> bool:
+        """A non-cancelled request between the two, in either direction: liking again creates nothing new."""
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            self.execute(cur, """SELECT 1 FROM matching_api.requests
+                WHERE pair_low=%s AND pair_high=%s AND status <> 'cancelled'""", tuple(sorted((a, b))))
+            return cur.fetchone() is not None
+
     def cancel(self, request_id: UUID, actor: UUID):
         with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             self.execute(cur, "SELECT * FROM matching_api.requests WHERE id=%s FOR UPDATE", (request_id,))
