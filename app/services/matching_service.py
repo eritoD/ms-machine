@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.schemas.chats import ChatLastMessage, ChatParticipant, ChatSummary, ReadResult
 from app.schemas.matching import Connection, MatchingState, Message, ReplyPreview
 from app.services.attachments import check_attachment
+from app.services.entitlements_client import enforce, uso
 from app.services.realtime import NullRealtime
 
 log = logging.getLogger(__name__)
@@ -16,11 +17,13 @@ REPLY_PREVIEW_CHARACTERS = 100  # a quoted message is shown cut short, never who
 
 
 class MatchingService:
-    def __init__(self, repository, users, attachment_hosts=(), realtime=None):
+    def __init__(self, repository, users, attachment_hosts=(), realtime=None, entitlements=None):
         self.repository = repository
         self.users = users
         self.attachment_hosts = attachment_hosts
         self.realtime = realtime or NullRealtime()
+        # HU-54: plan limits read from ms-pago; None = no limits (fail-open).
+        self.entitlements = entitlements
 
     @staticmethod
     def peer(row, actor):
@@ -33,7 +36,15 @@ class MatchingService:
         if actor.id == recipient:
             raise HTTPException(422, "No puedes enviarte una solicitud.")
         card = self.users.card(recipient, actor.token)
+        if self.entitlements is not None and not self.repository.pair_exists(actor.id, recipient):
+            enforce(self.entitlements, "usuario", actor.id, "solicitudes_match",
+                    lambda since: self.repository.requests_sent_since(actor.id, since))
         return self.connection(self.repository.request(actor.id, recipient), actor, card)
+
+    def plan_usage(self, actor):
+        """HU-54: cuántas solicitudes de match lleva en la ventana de su plan (misma consulta que el 402)."""
+        return uso(self.entitlements, "usuario", actor.id, {
+            "solicitudes_match": lambda since: self.repository.requests_sent_since(actor.id, since)})
 
     def decide(self, actor, request_id, action):
         row = self.repository.get(request_id, actor.id)
