@@ -162,7 +162,7 @@ class MatchingService:
                                                {"type": "new_message", "conversationId": conversation,
                                                 "message": message.model_dump(mode="json")})
             if self.realtime.is_connected(recipient):
-                unread, total = self.repository.unread_counts(recipient, message.match_id)
+                unread, total = self._unread_counts(recipient, message.match_id)
                 content = message.text if message.message_type == "TEXT" or message.text.strip() \
                     else _LABELS[message.message_type]
                 self.realtime.emit_to_user(recipient, {
@@ -173,6 +173,17 @@ class MatchingService:
                                     "type": message.message_type}}, skip_conversation=message.match_id)
         except Exception:
             log.exception("Could not announce a saved message in real time")
+
+    def _unread_counts(self, user_id, match_id):
+        """(unread here, unread total). The total only counts the chats the person sees in their list: those with
+        people who are blocked (either way), suspended or whose account was deactivated are not there, so their
+        unread messages must not be in the badge either. If Ms_Users cannot say, everything counts."""
+        rows = self.repository.unread_by_conversation(user_id)
+        here = sum(count for conversation, _, count in rows if conversation == match_id)
+        visible = self.users.contactable(user_id, list(dict.fromkeys(peer for _, peer, _ in rows)))             if rows and hasattr(self.users, "contactable") else None
+        if rows and visible is None:
+            log.warning("Could not tell which chats are visible; the unread total counts all of them")
+        return here, sum(count for _, peer, count in rows if visible is None or peer in visible)
 
     def send_message(self, actor, match_id, spec):
         """Send a TEXT, IMAGE, FILE or LOCATION message (HU-50). Being in the conversation is checked first."""

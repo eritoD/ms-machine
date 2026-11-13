@@ -1,4 +1,5 @@
 import math
+import os
 from contextlib import asynccontextmanager
 
 import httpx
@@ -52,7 +53,7 @@ def create_app(service=None, settings=None):
                 with httpx.Client(base_url=config.users_url, timeout=10, trust_env=False) as client:
                     app.state.settings = config
                     hub = RealtimeHub()
-                    app.state.service = MatchingService(repository, UsersClient(client), config.attachment_hosts,
+                    app.state.service = MatchingService(repository, UsersClient(client, os.getenv("INTERNAL_SERVICE_TOKEN")), config.attachment_hosts,
                                                         realtime=hub, entitlements=entitlements)
                     _start_realtime(app)
                     yield

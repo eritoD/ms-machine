@@ -182,14 +182,16 @@ class PostgresMatchingRepository:
                 LIMIT %s OFFSET %s""", (actor, actor, actor, limit, offset))
             return cur.fetchall()
 
-    def unread_counts(self, user_id: UUID, match_id: UUID) -> tuple[int, int]:
-        """(unread in this conversation, unread in all the person's active conversations)."""
+    def unread_by_conversation(self, user_id: UUID) -> list[tuple[UUID, UUID, int]]:
+        """(conversation, the other person, unread messages from them) for each active conversation of the person
+        that has unread messages. The caller decides which of those people still count (blocked, deactivated)."""
         with self.pool.connection() as conn, conn.cursor() as cur:
-            self.execute(cur, """SELECT count(*) FILTER (WHERE m.match_id=%s), count(*)
+            self.execute(cur, """SELECT r.id, CASE WHEN r.sender_id=%s THEN r.recipient_id ELSE r.sender_id END, count(*)
                 FROM matching_api.messages m JOIN matching_api.requests r ON r.id=m.match_id
                 WHERE r.status='accepted' AND (r.sender_id=%s OR r.recipient_id=%s)
-                AND m.sender_id<>%s AND m.read_at IS NULL""", (match_id, user_id, user_id, user_id))
-            return cur.fetchone()
+                AND m.sender_id<>%s AND m.read_at IS NULL GROUP BY r.id, r.sender_id, r.recipient_id""",
+                         (user_id, user_id, user_id, user_id))
+            return [(row[0], row[1], row[2]) for row in cur.fetchall()]
 
     def mark_read(self, match_id: UUID, actor: UUID) -> int:
         """Mark every unread message the other person sent in this conversation as read."""

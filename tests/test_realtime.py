@@ -396,3 +396,25 @@ def test_a_service_without_real_time_still_sends_messages(system):
     client, *_ = system  # built without a hub: events go nowhere and nothing breaks
     rid = match(client)
     assert post(client, rid, actor=A, content="Sin tiempo real")["text"] == "Sin tiempo real"
+
+
+def test_total_unread_ignores_blocked_and_deactivated_people_and_matches_the_chat_list(live):
+    """El contador de la insignia debe ser la suma de la lista de chats: esa lista no muestra a las personas
+    bloqueadas ni a las cuentas desactivadas, así que sus mensajes sin leer tampoco cuentan."""
+    client, hub, directory = live
+    with_b = match(client, A, B)
+    with_c = match(client, C, B)
+    other = uuid4()
+    directory.active.add(other)
+    with_d = match(client, other, B)
+    post(client, with_c, actor=C, content="De C")
+    post(client, with_d, actor=other, content="De otra")
+    directory.blocked.add((B, C))      # B bloqueó a C
+    directory.active.discard(other)    # y la otra cuenta se desactivó
+    with socket(client, B) as recipient:
+        post(client, with_b, actor=A, content="De A")
+        event = recipient.receive_json()
+        assert event["type"] == "unread_update" and event["conversationId"] == with_b
+        chats = client.get(CHATS, headers=headers(B)).json()
+        assert sum(chat["unreadCount"] for chat in chats) == 1
+        assert event["totalUnread"] == sum(chat["unreadCount"] for chat in chats) == 1

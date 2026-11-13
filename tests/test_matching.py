@@ -34,6 +34,10 @@ def headers(user_id):
 class Directory:
     def __init__(self):
         self.active = {A, B, C}
+        self.blocked = set()  # pairs (x, y): either direction hides the two people from each other
+
+    def _reachable(self, viewer, uid):
+        return uid in self.active and (viewer, uid) not in self.blocked and (uid, viewer) not in self.blocked
 
     def card(self, user_id, _token):
         if user_id not in self.active:
@@ -42,7 +46,11 @@ class Directory:
                 "edad": None, "foto_perfil": None, "biografia": None, "deportes": [], "compatibilidad": 0}
 
     def cards(self, user_ids, token):
-        return {uid: self.card(uid, token) for uid in user_ids if uid in self.active}
+        viewer = UUID(jwt.decode(token, options={"verify_signature": False})["sub"])
+        return {uid: self.card(uid, token) for uid in user_ids if self._reachable(viewer, uid)}
+
+    def contactable(self, viewer, user_ids):
+        return {uid for uid in user_ids if self._reachable(viewer, uid)}
 
 
 @pytest.fixture
